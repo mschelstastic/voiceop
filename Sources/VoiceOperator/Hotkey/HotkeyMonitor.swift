@@ -1,14 +1,17 @@
 import AppKit
 import IOKit.hid
 
-/// Global trigger-key monitor. The trigger is the **Fn (Globe) key** — Wispr Flow
-/// has been retired, so we take over its key (DESIGN.md "Trigger key").
+/// Global trigger-key monitor. The trigger is the **Fn (Globe) key** by default
+/// — Wispr Flow has been retired, so we take over its key (DESIGN.md "Trigger
+/// key") — or whichever `TriggerKey`s the menu switched on; any of them works.
 ///
 /// Fn is not an ordinary modifier: its flagsChanged event reports keycode 63
 /// (kVK_Function) with the kCGEventFlagMaskSecondaryFn bit (0x800000), rather
 /// than a device-dependent left/right bit. Ensure macOS System Settings →
 /// Keyboard → "Press 🌐 key to" is set to "Do Nothing" so it doesn't also
-/// trigger emoji/dictation/input-switching.
+/// trigger emoji/dictation/input-switching. A function-key trigger (F13–F19)
+/// arrives as keyDown/keyUp instead, and is consumed so the frontmost app does
+/// not see it too — see `handleFunctionKeyTrigger`.
 ///
 /// Gestures — note that **recording always begins on key-down**, with no hold
 /// threshold. The old code waited 250 ms before starting so it could tell a hold
@@ -157,6 +160,14 @@ final class HotkeyMonitor: @unchecked Sendable {
     }
     private var toggleMode = false
 
+    /// The keys that start a dictation. Guarded by `stateLock` like
+    /// `tapToToggle`: the menu sets it on main, the tap reads it per event.
+    var triggerKeys: Set<TriggerKey> {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return triggers }
+        set { stateLock.lock(); triggers = newValue; stateLock.unlock() }
+    }
+    private var triggers: Set<TriggerKey> = [.fn]
+
     /// Live Control-key state, updated from every flagsChanged event on the
     /// hotkey thread. Used only to seed `DictationModeDecision` at key-down;
     /// late Control presses are forwarded to the decision on the main thread.
@@ -231,10 +242,6 @@ final class HotkeyMonitor: @unchecked Sendable {
         }
     }
 
-    // Fn (Globe): keycode 63 (kVK_Function), flagged by kCGEventFlagMaskSecondaryFn.
-    private static let triggerKeycode: Int64 = 63
-    private static let triggerBit: UInt64 = 0x800000
-
     /// Left Shift, by its **device-dependent** bit (`NX_DEVICELSHIFTKEYMASK`)
     /// rather than the generic `maskShift` (0x20000). The generic bit cannot tell
     /// the two Shift keys apart, so releasing the left one while the right one is
@@ -280,7 +287,10 @@ final class HotkeyMonitor: @unchecked Sendable {
     private let stopTail: TimeInterval = 0.5
 
     private var tap: CFMachPort?
-    private var isDown = false
+    /// The trigger key that is down, if any. While one is held, the others are
+    /// ignored: a dictation belongs to the key that started it, and only that
+    /// key's release ends it.
+    private var heldKey: TriggerKey?
     /// `CGEvent.timestamp` of the key-down (nanoseconds since boot).
     private var downTimestamp: UInt64 = 0
     /// Fallback anchor, for the rare event that carries no timestamp.
@@ -331,6 +341,7 @@ final class HotkeyMonitor: @unchecked Sendable {
             callback: { _, type, event, refcon in
                 if let refcon {
                     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
+                    if monitor.handleFunctionKeyTrigger(type: type, event: event) { return nil }
                     if monitor.handlePlaybackKey(type: type, event: event) { return nil }
                     monitor.handle(type: type, event: event)
                 }
@@ -389,6 +400,38 @@ final class HotkeyMonitor: @unchecked Sendable {
         return true
     }
 
+    /// A function-key trigger (F13–F19) is an ordinary key, so it arrives as
+    /// keyDown/keyUp rather than flagsChanged. Consumed whatever the modifiers
+    /// (Ctrl+F13 is command mode), so the frontmost app never sees it. A held
+    /// key's autorepeat keyDowns fall to the duplicate filter in `setTrigger`.
+    private func handleFunctionKeyTrigger(type: CGEventType, event: CGEvent) -> Bool {
+        guard type == .keyDown || type == .keyUp,
+              let key = TriggerKey(keycode: event.getIntegerValueField(.keyboardEventKeycode)),
+              key.modifierBit == nil, isTrigger(key) else { return false }
+        setTrigger(key, down: type == .keyDown, at: event.timestamp)
+        return true
+    }
+
+    /// Switched on — or the one being held, so switching it off mid-hold in the
+    /// menu still lets its release end the dictation.
+    private func isTrigger(_ key: TriggerKey) -> Bool {
+        heldKey == key || triggerKeys.contains(key)
+    }
+
+    private func setTrigger(_ key: TriggerKey, down: Bool, at timestamp: UInt64) {
+        // Ignore duplicates / confounding modifiers / autorepeat, and a second
+        // trigger key pressed or released while another is held.
+        if down {
+            guard heldKey == nil else { return }
+            heldKey = key
+            keyDown(at: timestamp)
+        } else {
+            guard heldKey == key else { return }
+            heldKey = nil
+            keyUp(at: timestamp)
+        }
+    }
+
     private func handle(type: CGEventType, event: CGEvent) {
         // A slow/stalled tap gets disabled by the system; re-enable it.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -396,7 +439,7 @@ final class HotkeyMonitor: @unchecked Sendable {
             Log.log("hotkey tap re-enabled after \(type == .tapDisabledByTimeout ? "timeout" : "user input")")
             // Events during the disabled window are gone — possibly including the
             // key-up that would have ended a dictation. Resynchronise rather than
-            // trust stale state: otherwise `isDown` stays true, the recording runs
+            // trust stale state: otherwise `heldKey` stays set, the recording runs
             // unbounded, and the duplicate-event filter below swallows the user's
             // next press as they try to recover.
             shiftArmed = false   // its release may well have been in the gap
@@ -404,7 +447,7 @@ final class HotkeyMonitor: @unchecked Sendable {
                 Log.log("hotkey: dictation was in progress across the gap — stopping it")
                 cancelStopTimer()
                 gesture = .idle
-                isDown = false
+                heldKey = nil
                 onMain { [weak self] in
                     self?.modeDecision = nil
                     self?.onStop?()
@@ -459,11 +502,8 @@ final class HotkeyMonitor: @unchecked Sendable {
         let flags = event.flags.rawValue
         trackLeftShift(flags: flags)
         trackCommandLock(flags: flags)
-        guard keycode == Self.triggerKeycode else { return }
-        let down = (flags & Self.triggerBit) != 0
-        if down == isDown { return }   // ignore duplicates / confounding modifiers
-        isDown = down
-        if down { keyDown(at: event.timestamp) } else { keyUp(at: event.timestamp) }
+        guard let key = TriggerKey(keycode: keycode), let bit = key.modifierBit, isTrigger(key) else { return }
+        setTrigger(key, down: (flags & bit) != 0, at: event.timestamp)
     }
 
     /// Edge-detect the left Shift key and turn a clean tap of it, during a
@@ -554,7 +594,7 @@ final class HotkeyMonitor: @unchecked Sendable {
         case .locked:
             stop(after: stopTail, from: .stopping)
         case .holding:
-            break   // duplicate down; the isDown guard normally filters these
+            break   // duplicate down; the heldKey guard normally filters these
         case .stopping:
             break   // already on its way out
         }

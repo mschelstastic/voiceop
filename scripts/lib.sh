@@ -124,5 +124,11 @@ copy_kokoro_resources() {
 # Set VO_NO_RESTART=1 to skip (and get a warning instead).
 restart_running_app() {
     local app="$1" version="$2"
+    # install-app.sh --build restarts once itself, into the installed copy.
+    [ -z "${VO_SKIP_RESTART:-}" ] || return 0
+    # A debug instance running from /Applications relaunches the build it was
+    # copied from (ApplicationsRelocator) — point that at this build, since
+    # install-app.sh clears it and the copy may never have come from here.
+    defaults write com.chriswa.voiceoperator ApplicationsRelocator.sourceBundlePath "$(cd "$app" && pwd -P)"
     scripts/restart-app.sh "$app" "$version"
 }

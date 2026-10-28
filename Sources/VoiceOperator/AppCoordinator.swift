@@ -219,6 +219,15 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
             Log.log("hotkey mode: \(on ? "tap-to-toggle" : "hold / double-tap-lock")")
             return on
         }
+        menuBar.triggerKeys = { HotkeyPreferences.triggerKeys }
+        menuBar.onToggleTriggerKey = { [weak self] key in
+            var keys = HotkeyPreferences.triggerKeys
+            if keys.contains(key) { keys.remove(key) } else { keys.insert(key) }
+            guard !keys.isEmpty else { return }   // the last one stays on
+            HotkeyPreferences.triggerKeys = keys
+            self?.hotkey.triggerKeys = keys
+            Log.log("hotkey triggers: \(HotkeyPreferences.describe(keys))")
+        }
 
         hotkey.onStart = { [weak self] mode, trace in self?.arbiter.beginDictation(mode: mode, trace: trace) }
         hotkey.onStop = { [weak self] in self?.arbiter.endDictation(context: Self.frontmostContext()) }
@@ -256,6 +265,8 @@ final class AppCoordinator: NSObject, NSApplicationDelegate {
         }
         arbiter.onPlaybackControlsChanged?()
         hotkey.tapToToggle = HotkeyPreferences.tapToToggle
+        hotkey.triggerKeys = HotkeyPreferences.triggerKeys
+        Log.log("hotkey triggers: \(HotkeyPreferences.describe(HotkeyPreferences.triggerKeys))")
         installHotkeyWhenTrusted()
         watchSecureInput()
         do { try speechService.start() } catch { Log.log("speech HTTP start failed: \(error)") }

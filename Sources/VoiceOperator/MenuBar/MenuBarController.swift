@@ -18,6 +18,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     /// What incognito means, under its checkbox while it is on.
     private let incognitoNote = NSMenuItem(title: "Nothing is saved or leaves this Mac", action: nil, keyEquivalent: "")
     private let tapToToggle = NSMenuItem(title: "Tap to Toggle Dictation", action: #selector(toggleTapToToggle), keyEquivalent: "")
+    private let triggerKeyItem = NSMenuItem(title: "Trigger Keys", action: nil, keyEquivalent: "")
     private let wordOverlay = NSMenuItem(title: "Word Overlay", action: nil, keyEquivalent: "")
     private let muteSystemAudio = NSMenuItem(title: "Mute System Audio While Dictating", action: #selector(toggleMuteSystemAudio), keyEquivalent: "")
     private let typeInsteadOfPaste = NSMenuItem(title: "Type Text Instead of Pasting", action: #selector(toggleTypeInsteadOfPaste), keyEquivalent: "")
@@ -77,6 +78,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     /// returns the state afterwards so the checkmark can follow it.
     var tapToToggleState: (() -> Bool)?
     var onToggleTapToToggle: (() -> Bool)?
+    /// Reads which keys start a dictation, and switches one on or off (see
+    /// `TriggerKey`); the last one on can't be switched off.
+    var triggerKeys: (() -> Set<TriggerKey>)?
+    var onToggleTriggerKey: ((TriggerKey) -> Void)?
     /// Reads and sets the word overlay's placement — from its submenu, or the
     /// next one in the cycle on ⌘⌃/.
     var wordOverlayPlacement: (() -> OverlayPlacement)?
@@ -186,6 +191,12 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         for item in [ttsInstall, ttsUpdate, ttsRestart, ttsUninstall, ttsLog] { item.target = self; tts.addItem(item) }
         textToSpeech.submenu = tts; menu.addItem(textToSpeech)
         menu.addItem(.separator())
+        let triggerKeys = NSMenu()
+        for key in TriggerKey.allCases {
+            let item = NSMenuItem(title: key.title, action: #selector(chooseTriggerKey(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = key.rawValue; triggerKeys.addItem(item)
+        }
+        triggerKeyItem.submenu = triggerKeys; menu.addItem(triggerKeyItem)
         tapToToggle.target = self; menu.addItem(tapToToggle)
         // One radio item per placement, then the cycle with its chord shown.
         let placements = NSMenu()
@@ -302,6 +313,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         guard menu === self.menu else { return }
         onMenuOpenChanged?(true)
         tapToToggle.state = (tapToToggleState?() ?? false) ? .on : .off
+        let triggers = Set((triggerKeys?() ?? [.fn]).map(\.rawValue))
+        for item in triggerKeyItem.submenu!.items {
+            item.state = triggers.contains(item.representedObject as? String ?? "") ? .on : .off
+        }
         let current = (wordOverlayPlacement?() ?? .bottom).rawValue
         for item in wordOverlay.submenu!.items where item.representedObject != nil {
             item.state = item.representedObject as? String == current ? .on : .off
@@ -464,6 +479,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     func cycleWordOverlay() {
         onSetWordOverlay?((wordOverlayPlacement?() ?? .bottom).next)
     }
+    @objc private func chooseTriggerKey(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let key = TriggerKey(rawValue: raw) else { return }
+        onToggleTriggerKey?(key)
+    }
     @objc private func chooseWordOverlay(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let placement = OverlayPlacement(rawValue: raw) else { return }
         onSetWordOverlay?(placement)
@@ -493,6 +512,8 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         // One Kokoro action at a time; Cancel Install stays live while one runs.
         if item === ttsUpdate || item === ttsRestart || item === ttsUninstall { return ttsActionsEnabled }
         if item === ttsInstall { return ttsActionsEnabled || item.title == "Cancel Install" }
+        // The only trigger key on can't be switched off, or nothing would start a dictation.
+        if item.action == #selector(chooseTriggerKey(_:)) { return (triggerKeys?() ?? [.fn]).count > 1 || item.state == .off }
         if item.action == #selector(copyLastShadow) { return !(lastShadow?()?.text ?? "").isEmpty }
         if item.action == #selector(selectProvider(_:)) || item.action == #selector(selectShadow(_:)),
            let id = (item.representedObject as? String).flatMap(TranscriptionProviderID.init) {

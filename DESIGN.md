@@ -555,6 +555,17 @@ give-up (`session-ended`, why `microphone`).
 - **Ours**: default to **Right Shift (keycode 60)** during development via a `CGEventTap` on
   `flagsChanged`, configurable, so Wispr Flow (still on Fn) keeps working in parallel until we
   retire it. Migrate to Fn later. (macOS "double-tap Fn" dictation already disabled by user.)
+- **Configurable (2026-10-26).** Fn is the default; the **Trigger Keys** menu (`TriggerKey`,
+  `HotkeyPreferences.triggerKeys`) offers Right Option and F13–F19 for keyboards whose Fn is a
+  firmware layer key that macOS never sees (Keychron). Modifier triggers are read from
+  `flagsChanged` by keycode + flag bit (Right Option by its device bit `NX_DEVICERALTKEYMASK`);
+  F-keys from keyDown/keyUp, consumed by the tap, autorepeat dropped by the duplicate filter.
+  Right Command/Control are left out: ⌘ locks a hold and ⌃ picks command mode.
+- **Several at once (2026-10-28).** The menu's items are checkboxes, not radios, so a laptop's
+  Fn and an external keyboard's F13 can both be on (stored as `vo.triggerKeys`; the old single
+  `vo.triggerKey` is read as the fallback). The last one on can't be switched off. A dictation
+  belongs to the key that started it (`HotkeyMonitor.heldKey`): other triggers are ignored
+  until that key's release.
 
 #### Two invariants the key path must keep (2026-08-12)
 

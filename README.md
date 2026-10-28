@@ -76,6 +76,14 @@ clean-up) with **Retry** and **Copy**.
 Set System Settings → Keyboard → "Press 🌐 key to" = **Do Nothing** so Fn doesn't
 also trigger emoji/dictation/input-switching.
 
+**Trigger Keys** in the menu switches Fn, Right Option and F13–F19 on and off —
+any that are on start a dictation, so a laptop can keep Fn while an external
+keyboard uses F13. Everything above works the same with each, and Ctrl+that key
+is command mode. Use it when your keyboard's Fn
+never reaches macOS — Keychron and most other third-party keyboards handle Fn
+inside the keyboard — and remap a spare key to F13 in the keyboard's own software
+(Keychron Launcher, VIA). A function-key trigger is consumed, so apps never see it.
+
 ## Voice commands (command mode — Ctrl+Fn)
 
 Voice Operator doesn't interpret commands itself. The verbatim transcription goes
@@ -386,6 +394,14 @@ swift build                 # compile (host arch)
 swift test                  # unit tests
 ./scripts/make-app.sh       # build "build/Voice Operator.app" (menu-bar accessory)
 open "build/Voice Operator.app"
+```
+
+To install a build into `/Applications` (debug builds also do this themselves
+when launched; release builds don't):
+
+```bash
+./scripts/install-app.sh                    # install build/Voice Operator.app, restart into it
+./scripts/install-app.sh --build release    # build release first, then install
 ```
 
 For a notarized release binary, see [`docs/RELEASING.md`](docs/RELEASING.md)
